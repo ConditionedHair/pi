@@ -5,9 +5,10 @@ Personal Pi coding agent configuration, package declarations, lockfile, and cust
 ## Contents
 
 - `settings.json`: package declarations and extension preferences.
-- `mcp.json`: MCP servers; Context7 credentials come from `CONTEXT7_API_KEY`.
+- `mcp.json`: Context7 and Google Services MCP servers; Context7 credentials come from `CONTEXT7_API_KEY`.
+- `mcp.composio.example.json`: sanitized Composio MCP configuration template; the private endpoint comes from `COMPOSIO_MCP_URL`.
 - `npm/package.json` and `npm/package-lock.json`: installed extension and skill packages, with resolved versions.
-- `skills/`: custom local skills (currently empty).
+- `skills/`: local code review, codebase design, bug diagnosis, and test-driven development skills.
 - `vendor/packages/`: committed source snapshots of all 14 configured skill and extension packages, including their skill files, extension entry points, supporting code, documentation, and packaged license files. Scoped packages retain their scope directory (for example, `vendor/packages/@feniix/pi-sequential-thinking/`).
 - MCP onboarding/version state and `pi-web-access/` version state.
 
@@ -25,6 +26,18 @@ npm ci --ignore-scripts
 Restart Pi. Alternatively, `pi update --extensions` reconciles packages from settings, but may update versions.
 
 Set `CONTEXT7_API_KEY` in your environment. Install the Google services MCP executable separately and adjust its machine-specific path in `mcp.json`. Authenticate providers and MCP services separately.
+
+### Composio MCP
+
+Composio is configured locally in `~/.config/mcp/mcp.json`, outside this repository. The installed `pi-mcp-adapter` loads that configuration; Composio is a remote service, not a separate vendored package. Its private endpoint is intentionally not committed.
+
+To restore Composio:
+
+1. Set `COMPOSIO_MCP_URL` to your full private Composio MCP endpoint in the environment that launches Pi. Treat the full URL as a credential.
+2. Merge the `composio` entry from `mcp.composio.example.json` into `mcpServers` in `~/.config/mcp/mcp.json`, preserving any existing servers. If that file does not exist, copy the template there after creating the parent directory.
+3. Restart Pi and inspect Composio with `/mcp`.
+
+The template uses environment-variable URL interpolation supported by the installed `pi-mcp-adapter`. It is documentation only: Pi does not automatically load `mcp.composio.example.json`. Existing local Composio configuration remains unchanged.
 
 ## Exclusions
 

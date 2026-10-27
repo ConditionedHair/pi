@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "composio": {
+      "url": "${COMPOSIO_MCP_URL}"
+    }
+  }
+}
