@@ -1,6 +1,23 @@
-# Public repository: track only explicitly reviewed configuration.
-/*
-!/.gitignore
-!/README.md
-!/settings.json
-!/mcp.json
+# Credentials and secret-bearing local configuration
+/auth.json
+/mcp-auth.json
+/models-store.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+
+# Private conversations, memory, and recovery records
+/sessions/
+/memory/
+
+# Generated caches and installed dependencies
+/mcp-cache.json
+node_modules/
+.cache/
+*.log
+.DS_Store

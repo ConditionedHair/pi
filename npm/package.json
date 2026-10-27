@@ -1,0 +1,20 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "dependencies": {
+    "@feniix/pi-sequential-thinking": "^5.1.0",
+    "graphify-pi": "^0.3.0",
+    "pi-caveman": "^1.0.12",
+    "pi-chrome-dev-tools": "^0.1.0",
+    "pi-exit-cmd": "^1.0.2",
+    "pi-fallow": "^0.6.3",
+    "pi-generative-ui": "^0.3.0",
+    "pi-grilling-skill": "^1.0.4",
+    "pi-impeccable": "^0.1.0",
+    "pi-mcp-adapter": "^7.0.0",
+    "pi-memory": "^0.4.2",
+    "pi-multiagent": "^0.9.8",
+    "pi-playwright": "^0.1.2",
+    "pi-web-access": "^0.45.0"
+  }
+}
