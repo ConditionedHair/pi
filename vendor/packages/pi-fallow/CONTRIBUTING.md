@@ -1,0 +1,96 @@
+# Contributing
+
+Thanks for your interest in improving Pi Fallow.
+
+Pi Fallow is a small Pi package that connects Fallow codebase intelligence to the Pi coding agent. Contributions that improve reliability, packaging, documentation, or the `/fallow` user experience are welcome.
+
+## Before you start
+
+- Open an issue for larger changes so we can agree on direction first.
+- Keep behavior compatible with existing `/fallow` commands and the `fallow_run` tool.
+- Prefer small, focused changes over broad rewrites.
+- Avoid suppressing Fallow findings when a straightforward refactor can fix them.
+
+## Local setup
+
+```bash
+npm install
+```
+
+Try the package locally with Pi:
+
+```bash
+pi -e .
+```
+
+Or install the checkout as a local Pi package:
+
+```bash
+pi install .
+```
+
+## Checks
+
+Run the full local check suite before opening a PR:
+
+```bash
+npm run check
+npm run dupes
+npm run dead-code
+npm run smoke:fallow
+npm run smoke:fallow-cov
+# Optional: requires the already user-installed pinned model; never downloads it
+npm run smoke:fallow-similar
+npm run coverage
+npm run audit:production
+npm run audit:all
+npm run package:smoke
+npm run bench:tokens -- --label candidate --output /tmp/pi-fallow-token-candidate.json
+npm run bench:tokens:compare -- benchmarks/baselines/v0.2.0.json /tmp/pi-fallow-token-candidate.json
+npm run bench:performance -- --label candidate --output /tmp/pi-fallow-performance-candidate.json
+npm run bench:performance:compare -- benchmarks/baselines/performance-v0.2.0.json /tmp/pi-fallow-performance-candidate.json
+npm run pack:check
+```
+
+What these cover:
+
+- `npm run check` runs unit tests, bundle checks, and Fallow health checks.
+- `npm test` runs fast Node-based regression tests for argument mapping and overview parsing.
+- `npm run check:bundle` bundles the extension entrypoints with external Pi peer dependencies.
+- `npm run health` runs Fallow health checks.
+- `npm run dupes` checks for duplicate code.
+- `npm run dead-code` checks for unused files/exports and stale suppressions.
+- `npm run smoke:fallow` smoke-tests modeled Fallow CLI surfaces and checks every tool registry prefix against the live capability schema. It also recaptures isolated report/help evidence and compares known fields while accepting additive object fields. Offline fixture and mutation tests run with `npm test`; see [`tests/fixtures/fallow/README.md`](./tests/fixtures/fallow/README.md) for certification scope and regeneration.
+- `npm run smoke:fallow-cov` is the explicit networked optional-sidecar lane: on Node 24 it ephemerally fetches exact `@fallow-cli/fallow-cov` 0.4.1 with install scripts disabled, verifies a real local V8 capture through Fallow, and leaves the proprietary sidecar out of normal dependencies and user-home installation.
+- `npm run smoke:fallow-similar` is a manual model-backed certification lane. It requires the exact model to be already installed and integrity-verified, uses a tiny isolated project and empty config, forces `--no-cache`, and certifies complete local discovery, source-grounded inspect, and immutable verdict review. It never runs setup or downloads a model, so it is intentionally excluded from ordinary CI and release gates.
+- `npm run coverage` generates text/lcov reports and enforces gradual all-file thresholds.
+- `npm run audit:production` and `npm run audit:all` check the shipped and complete dependency trees.
+- `npm run package:smoke` packs, installs, and validates the npm tarball in an isolated project.
+- `npm run bench:tokens` and `npm run bench:tokens:compare` measure model-visible output against the frozen `0.2.0` baseline.
+- `npm run bench:performance` and `npm run bench:performance:compare` measure runner, processing, Git, memory, and cold/warm behavior against the performance baseline.
+- `npm run bench:packages` clones pinned popular JS/TS packages and runs `/fallow issues` against them. It needs network on a cache miss and is not part of ordinary CI.
+- `npm run pack:check` verifies the npm package contents.
+
+### Overlay UX changes
+
+Run `npm run probe:overlay` on macOS/Linux with Python 3 for the native Pi TUI PTY keyboard/resize probe. It uses fixture callbacks only: no optional downloads, installation, or inference. JSON frame evidence and terminal bytes are saved in the printed temporary directory. See [the validation matrix and human review checklist](docs/overlay-ux-validation.md); the probe does not replace user review or #83 model-backed certification. If the optional sidecar is already installed, reuse its existing executable for the sidecar smoke test instead of the installing npm-exec wrapper.
+
+## Pull requests
+
+A good PR should include:
+
+- a short explanation of the change
+- screenshots or terminal output for visible UI changes when useful
+- confirmation that the checks above pass
+- notes about any behavior changes to `/fallow`, the navigator, or `fallow_run`
+
+## Releases
+
+Releases use npm trusted publishing and GitHub OIDC; maintainers should not need a long-lived npm token.
+
+1. Run `npm version patch|minor|major --no-git-tag-version`.
+2. Update `CHANGELOG.md` and run `npm run check:publish`.
+3. Commit the release changes and create the matching `vX.Y.Z` tag.
+4. Push `main` and the tag with `git push --follow-tags`.
+
+The tag triggers `.github/workflows/release.yml`, which validates the package, publishes it with provenance, and creates the GitHub release. See `.github/REPOSITORY_SETTINGS.md` for the one-time trusted-publisher setup.

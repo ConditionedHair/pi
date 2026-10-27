@@ -1,0 +1,113 @@
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { formatTerminalError } from "./utils.ts";
+
+export interface McpRuntimeOwner {
+  readonly signal: AbortSignal;
+  isActive(): boolean;
+  addCleanup(cleanup: () => void | Promise<void>): void;
+  stop(reason?: string): Promise<void>;
+  throwIfInactive(): void;
+}
+
+export function createMcpRuntimeOwner(): McpRuntimeOwner {
+  const controller = new AbortController();
+  const cleanups: Array<() => void | Promise<void>> = [];
+  let stopPromise: Promise<void> | undefined;
+
+  const reportCleanupFailure = (error: unknown, late: boolean) => {
+    console.error(`MCP: ${late ? "late " : ""}runtime cleanup failed: ${formatTerminalError(error)}`);
+  };
+
+  return {
+    signal: controller.signal,
+    isActive: () => !controller.signal.aborted,
+    addCleanup: cleanup => {
+      if (controller.signal.aborted) {
+        void Promise.resolve().then(cleanup).catch(error => reportCleanupFailure(error, true));
+        return;
+      }
+      cleanups.push(cleanup);
+    },
+    stop: (reason = "MCP extension runtime stopped") => {
+      if (stopPromise) return stopPromise;
+      controller.abort(new Error(reason));
+      const pendingCleanups = cleanups.splice(0).reverse().map(cleanup =>
+        Promise.resolve().then(cleanup),
+      );
+      stopPromise = Promise.allSettled(pendingCleanups).then(results => {
+        const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+        if (failures.length > 0) {
+          const aggregate = new AggregateError(failures, "MCP runtime cleanup failed");
+          console.error(`MCP: runtime cleanup failed: ${formatTerminalError(aggregate)}`);
+          throw aggregate;
+        }
+      });
+      return stopPromise;
+    },
+    throwIfInactive: () => controller.signal.throwIfAborted(),
+  };
+}
+
+export function combineAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const active = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(active);
+
+  // AbortSignal.any was added after Node 20.0.0, our minimum supported version.
+  const controller = new AbortController();
+  const alreadyAborted = active.find(signal => signal.aborted);
+  if (alreadyAborted) {
+    controller.abort(alreadyAborted.reason);
+    return controller.signal;
+  }
+
+  const onAbort = (event: Event) => {
+    for (const signal of active) signal.removeEventListener("abort", onAbort);
+    controller.abort((event.target as AbortSignal).reason);
+  };
+  for (const signal of active) signal.addEventListener("abort", onAbort, { once: true });
+  return controller.signal;
+}
+
+/** Fence session-bound UI calls after the owning extension runtime stops. */
+export function createOwnedUi(ui: ExtensionUIContext, owner: McpRuntimeOwner): ExtensionUIContext {
+  const proxies = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (typeof value !== "object" || value === null) {
+      return value;
+    }
+    const object = value;
+    const existing = proxies.get(object);
+    if (existing) return existing;
+
+    // The proxy stands in front of an empty object, not the UI object itself. A host may freeze its
+    // UI or theme, and a proxy over a frozen object must return each property's own value, so it
+    // could neither wrap methods nor fence them after the owner stops.
+    const proxy = new Proxy(Object.create(Object.getPrototypeOf(object)), {
+      get(_shadow, property, receiver) {
+        if (!owner.isActive()) return undefined;
+        // A Proxy trap forwards the property and receiver as given, which only Reflect does.
+        // oxlint-disable-next-line anti-slop/no-reflect-get
+        const member = Reflect.get(object, property, receiver);
+        if (typeof member === "function") {
+          return (...args: unknown[]) => {
+            if (!owner.isActive()) return undefined;
+            // oxlint-disable-next-line anti-slop/no-reflect-apply
+            return Reflect.apply(member, object, args);
+          };
+        }
+        return owner.isActive() ? wrap(member) : undefined;
+      },
+      has: (_shadow, property) => Reflect.has(object, property),
+    });
+    proxies.set(object, proxy);
+    return proxy;
+  };
+  return wrap(ui) as ExtensionUIContext;
+}
+
+export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return error instanceof Error && (error.name === "AbortError" || error.message === "MCP extension runtime stopped");
+}

@@ -1,0 +1,174 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { getAgentDir, getConfigDirName } from "./agent-dir.ts";
+import type { McpConfig, ServerEntry } from "./types.ts";
+import { parseJsonWithComments, resolveContainedPath, resolveRealContainedPath } from "./utils.ts";
+
+interface PackageSetting {
+  source: string;
+}
+
+interface PackageManifest {
+  name?: unknown;
+  pi?: { mcp?: unknown };
+}
+
+export interface PackageServerSource {
+  scope: "project" | "user";
+  settingsPath: string;
+  packageRoot: string;
+}
+
+export interface LoadedPackageMcpConfig extends McpConfig {
+  serverSources: Map<string, PackageServerSource>;
+}
+
+export function loadPackageMcpConfigs(cwd = process.cwd()): LoadedPackageMcpConfig {
+  const mcpServers: Record<string, ServerEntry> = {};
+  const serverSources = new Map<string, PackageServerSource>();
+  const seen = new Set<string>();
+
+  for (const packageSource of getConfiguredPackageRoots(cwd)) {
+    const { packageRoot } = packageSource;
+    const manifest = readPackageManifest(packageRoot);
+    if (!manifest || typeof manifest.name !== "string" || !manifest.name) continue;
+    const paths = getManifestMcpPaths(manifest.pi?.mcp, manifest.name);
+    if (!paths) continue;
+
+    const packagePrefix = formatPackageName(manifest.name);
+    const packageServers = new Set<string>();
+    for (const path of paths) {
+      const configPath = resolvePackageConfigPath(packageRoot, path);
+      if (!configPath) {
+        console.warn(`Pi package ${manifest.name} skips MCP config ${path}: file must stay inside the package`);
+        continue;
+      }
+
+      const config = readMcpConfig(configPath, manifest.name);
+      if (!config) continue;
+      for (const [serverName, server] of Object.entries(config.mcpServers)) {
+        const normalizedName = `${packagePrefix}__${formatServerName(serverName)}`;
+        if (packageServers.has(normalizedName) || seen.has(normalizedName)) {
+          console.warn(`Pi package ${manifest.name} skips duplicate normalized MCP server ${normalizedName}`);
+          continue;
+        }
+        packageServers.add(normalizedName);
+        seen.add(normalizedName);
+        mcpServers[normalizedName] = server;
+        serverSources.set(normalizedName, packageSource);
+      }
+    }
+  }
+
+  return { mcpServers, serverSources };
+}
+
+function getConfiguredPackageRoots(cwd: string): PackageServerSource[] {
+  const roots: PackageServerSource[] = [];
+  for (const [settingsPath, scope] of [
+    [join(cwd, getConfigDirName(), "settings.json"), "project"],
+    [join(getAgentDir(), "settings.json"), "user"],
+  ] as const) {
+    const settings = readOptionalJson(settingsPath, `${scope} Pi settings`);
+    if (settings === undefined) continue;
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
+      throw new Error(`${scope} Pi settings ${settingsPath} must be a JSON object`);
+    }
+    const packages = (settings as { packages?: unknown }).packages;
+    if (packages === undefined) continue;
+    if (!Array.isArray(packages)) throw new Error(`${scope} Pi settings ${settingsPath} packages must be an array`);
+    for (const entry of packages) {
+      const source = typeof entry === "string"
+        ? entry
+        : entry && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as PackageSetting).source === "string"
+          ? (entry as PackageSetting).source
+          : undefined;
+      if (!source) throw new Error(`${scope} Pi settings ${settingsPath} package entries must be strings or objects with a string source`);
+      const root = resolvePackageRoot(source, scope, cwd);
+      if (root && !roots.some(entry => entry.packageRoot === root)) {
+        roots.push({ packageRoot: root, scope, settingsPath });
+      }
+    }
+  }
+  return roots;
+}
+
+function resolvePackageRoot(source: string, scope: "user" | "project", cwd: string): string | null {
+  const baseDir = scope === "user" ? getAgentDir() : join(cwd, getConfigDirName());
+  if (source.startsWith("npm:")) {
+    const name = source.slice(4).trim().match(/^(@?[^@]+(?:\/[^@]+)?)/)?.[1];
+    return name ? resolveContainedPath(join(baseDir, "npm", "node_modules"), name) : null;
+  }
+  const gitSource = source.startsWith("git:")
+    ? source.slice(4).trim()
+    : /^(?:(?:https?|ssh):\/\/|git@[^:]+:)/.test(source) ? source : null;
+  if (gitSource) {
+    // Pi installs URL sources under the bare hostname, without user or port.
+    const isUrl = /^[a-z]+:\/\//i.test(gitSource);
+    if (isUrl && !URL.canParse(gitSource)) return null;
+    const url = isUrl ? new URL(gitSource) : null;
+    const value = url ? url.hostname + url.pathname : gitSource.replace(/^git@([^:]+):/, "$1/");
+    // Like Pi, a non-empty ref starts at the first "@" after the host, so refs such as "@feature/x" keep their slash.
+    const refStart = value.indexOf("@", value.indexOf("/"));
+    const path = (refStart < 0 || refStart === value.length - 1 ? value : value.slice(0, refStart)).replace(/\.git$/, "");
+    return path && !path.startsWith("/") ? resolveContainedPath(join(baseDir, "git"), path) : null;
+  }
+  return isAbsolute(source) ? resolve(source) : resolve(baseDir, source);
+}
+
+function readPackageManifest(packageRoot: string): PackageManifest | null {
+  const manifest = readOptionalJson(join(packageRoot, "package.json"), `Pi package manifest ${packageRoot}`);
+  return manifest && typeof manifest === "object" && !Array.isArray(manifest) ? manifest as PackageManifest : null;
+}
+
+function getManifestMcpPaths(value: unknown, packageName: string): string[] | null {
+  const paths = typeof value === "string" ? [value] : Array.isArray(value) && value.every((path): path is string => typeof path === "string") ? value : null;
+  if (value !== undefined && !paths) console.warn(`Pi package ${packageName} ignores invalid pi.mcp manifest entry`);
+  return paths;
+}
+
+function readMcpConfig(path: string, packageName: string): McpConfig | null {
+  const config = readRequiredJson(path, `Pi package ${packageName} MCP config`);
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Pi package ${packageName} MCP config ${path} must be a JSON object`);
+  }
+  const servers = (config as { mcpServers?: unknown }).mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+    throw new Error(`Pi package ${packageName} MCP config ${path} must contain a JSON object mcpServers field`);
+  }
+  const mcpServers: Record<string, ServerEntry> = {};
+  for (const [name, server] of Object.entries(servers)) {
+    if (!server || typeof server !== "object" || Array.isArray(server)) {
+      throw new Error(`Pi package ${packageName} MCP config ${path} server ${name} must be a JSON object`);
+    }
+    mcpServers[name] = server as ServerEntry;
+  }
+  return { mcpServers };
+}
+
+function readRequiredJson(path: string, description: string): unknown {
+  try {
+    return parseJsonWithComments(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`${description} ${path} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+}
+
+function readOptionalJson(path: string, description: string): unknown | undefined {
+  if (!existsSync(path)) return undefined;
+  return readRequiredJson(path, description);
+}
+
+function resolvePackageConfigPath(packageRoot: string, path: string): string | null {
+  const lexicalPath = resolveContainedPath(packageRoot, path);
+  if (!lexicalPath || !existsSync(lexicalPath) || !statSync(lexicalPath).isFile()) return null;
+  return resolveRealContainedPath(packageRoot, lexicalPath);
+}
+
+function formatPackageName(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^[_-]+|[_-]+$/g, "") || "package";
+}
+
+function formatServerName(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^[_-]+|[_-]+$/g, "") || "server";
+}

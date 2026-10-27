@@ -1,0 +1,32 @@
+{
+  "name": "pi-caveman",
+  "version": "1.0.12",
+  "description": "Why use many token when few do trick. Caveman mode for pi — cuts ~75% output tokens while keeping full technical accuracy.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "caveman",
+    "token-saving"
+  ],
+  "license": "MIT",
+  "author": "jonjonrankin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonjonrankin/pi-caveman.git"
+  },
+  "homepage": "https://github.com/jonjonrankin/pi-caveman",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/caveman.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/jonjonrankin/pi-caveman/main/pi-caveman.gif"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

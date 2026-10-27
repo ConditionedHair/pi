@@ -1,0 +1,475 @@
+import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { UrlElicitationRequiredError, type Client } from "@modelcontextprotocol/client";
+import type { McpExtensionState } from "./state.ts";
+import { disabledServerReason } from "./project-server-trust.ts";
+import type { DirectToolSpec } from "./types.ts";
+import { lazyConnect, clearFailure, repageExecutorCatalog } from "./init.ts";
+import { describeFailure } from "./failure-backoff.ts";
+import { throwIfAborted } from "./abort.ts";
+import { formatSchema } from "./tool-metadata.ts";
+import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-registrar.ts";
+import { guardMcpOutput, guardMcpText, guardedMcpDetails, resolveMcpOutputGuardOptions } from "./mcp-output-guard.ts";
+import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+import { isServerDisabled } from "./types.ts";
+import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
+import { formatAuthRequiredMessage, normalizeToolArguments, resolveServerUrl, withToolCallIdMeta } from "./utils.ts";
+import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
+import { callToolOn, type StartedTask } from "./mcp-tasks.ts";
+import { backgroundTaskHandle } from "./task-jobs.ts";
+import { callToolAnsweringExecutorPauses, isExecutorConnection } from "./executor-pauses.ts";
+import { executorCallParams, executorUnknownToolMatches, executorUnknownToolText, unwrapExecutorCallResult } from "./executor-app-tools.ts";
+import { observedOutputRecorder } from "./output-shape.ts";
+import { approvalBlockedResult, ensureToolCallApproved, type ToolCallApprovalResult } from "./tool-approval.ts";
+import { getInputRequiredNeedsUiDetails } from "./errors.ts";
+
+type ClientCallToolResult = Awaited<ReturnType<Client["callTool"]>>;
+type ClientReadResourceResult = Awaited<ReturnType<Client["readResource"]>>;
+
+type DirectAutoAuthResult =
+  | { status: "skipped" }
+  | { status: "success" }
+  | { status: "failed"; message: string };
+
+export {
+  DIRECT_TOOLS_ADVISORY_THRESHOLD,
+  buildProxyDescription,
+  getLargeDirectToolsAdvisory,
+  getMissingConfiguredDirectToolServers,
+  prepareDirectToolArguments,
+  resolveDirectTools,
+} from "./direct-tool-surface.ts";
+
+function getDirectAuthRequiredMessage(
+  state: McpExtensionState,
+  serverName: string,
+  defaultMessage = `MCP server "${serverName}" requires OAuth authentication. Run mcp({ action: "auth-start", server: "${serverName}" }) to get a browser URL, or /mcp-auth ${serverName} in an interactive local session.`,
+): string {
+  return formatAuthRequiredMessage(state.config, serverName, defaultMessage);
+}
+
+function getDirectAuthFailedMessage(state: McpExtensionState, serverName: string, message: string): string {
+  const customGuidance = state.config.settings?.authRequiredMessage;
+  if (customGuidance) {
+    return `OAuth authentication failed for "${serverName}": ${message}. ${getDirectAuthRequiredMessage(state, serverName)}`;
+  }
+  return `OAuth authentication failed for "${serverName}": ${message}. Run mcp({ action: "auth-start", server: "${serverName}" }) to get a browser URL, or /mcp-auth ${serverName} in an interactive local session.`;
+}
+
+async function attemptDirectAutoAuth(
+  state: McpExtensionState,
+  serverName: string,
+  signal?: AbortSignal,
+): Promise<DirectAutoAuthResult> {
+  if (state.config.settings?.autoAuth !== true) {
+    return { status: "skipped" };
+  }
+
+  const definition = state.config.mcpServers[serverName];
+  if (!definition || isServerDisabled(definition) || !supportsOAuth(definition)) {
+    return { status: "skipped" };
+  }
+
+  let serverUrl: string | undefined;
+  try {
+    serverUrl = resolveServerUrl(definition);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: "failed", message: getDirectAuthFailedMessage(state, serverName, message) };
+  }
+  if (!serverUrl) {
+    return { status: "skipped" };
+  }
+
+  const grantType = definition.oauth ? definition.oauth.grantType ?? "authorization_code" : "authorization_code";
+  if (!state.ui && grantType !== "client_credentials") {
+    return {
+      status: "failed",
+      message: getDirectAuthRequiredMessage(
+        state,
+        serverName,
+        `MCP server "${serverName}" requires OAuth authentication. Run mcp({ action: "auth-start", server: "${serverName}" }) to get a browser URL, or /mcp-auth ${serverName} in an interactive local session.`,
+      ),
+    };
+  }
+
+  try {
+    if (state.authStorageOptions) {
+      await authenticate(
+        serverName,
+        serverUrl,
+        definition,
+        signal
+          ? { authStorageOptions: state.authStorageOptions, signal, runtime: state.oauthRuntime }
+          : { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime },
+      );
+    } else {
+      await authenticate(serverName, serverUrl, definition, {
+        ...(signal ? { signal } : {}),
+        runtime: state.oauthRuntime,
+      });
+    }
+    return { status: "success" };
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "failed",
+      message: getDirectAuthFailedMessage(state, serverName, message),
+    };
+  }
+}
+
+type DirectToolExecute = (
+  toolCallId: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined,
+  ctx: ExtensionContext,
+) => Promise<AgentToolResult<Record<string, unknown>>>;
+
+export function createDirectToolExecutor(
+  getState: () => McpExtensionState | null,
+  getInitPromise: () => Promise<McpExtensionState> | null,
+  spec: DirectToolSpec,
+  // Deferred tools (Pi 0.99+) keep the server's structuredContent.
+  structured = false,
+): DirectToolExecute {
+  const structuredContentOf = (result: ClientCallToolResult) => structured && result.structuredContent !== undefined
+    ? { structuredContent: result.structuredContent as NonNullable<AgentToolResult["structuredContent"]> }
+    : {};
+  return async function execute(toolCallId, params, signal) {
+    throwIfAborted(signal);
+    let state = getState();
+    const initPromise = getInitPromise();
+
+    if (!state && initPromise) {
+      try {
+        state = await initPromise;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text" as const, text: `MCP initialization failed: ${message}` }],
+          details: { error: "init_failed", message },
+        };
+      }
+    }
+    if (!state) {
+      return {
+        content: [{ type: "text" as const, text: "MCP not initialized" }],
+        details: { error: "not_initialized" },
+      };
+    }
+
+    const definition = state.config.mcpServers[spec.serverName];
+    if (isServerDisabled(definition)) {
+      const message = `MCP server "${spec.serverName}" is ${disabledServerReason(state.blockedProjectServers, spec.serverName)}`;
+      return {
+        content: [{ type: "text" as const, text: message }],
+        details: { error: "server_disabled", server: spec.serverName, message },
+      };
+    }
+
+    const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
+    throwIfAborted(ownedSignal);
+    let connected = await lazyConnect(state, spec.serverName, ownedSignal);
+    let autoAuthAttempted = false;
+
+    if (!connected && state.manager.getConnection(spec.serverName)?.status === "needs-auth") {
+      autoAuthAttempted = true;
+      const autoAuth = await attemptDirectAutoAuth(state, spec.serverName, ownedSignal);
+      if (autoAuth.status === "failed") {
+        return {
+          content: [{ type: "text" as const, text: autoAuth.message }],
+          details: { error: "auth_required", server: spec.serverName, message: autoAuth.message },
+        };
+      }
+      if (autoAuth.status === "success") {
+        await state.manager.close(spec.serverName);
+        clearFailure(state, spec.serverName);
+        connected = await lazyConnect(state, spec.serverName, ownedSignal);
+      }
+    }
+
+    if (!connected) {
+      const authConnection = state.manager.getConnection(spec.serverName);
+      if (authConnection?.status === "needs-auth") {
+        const message = getDirectAuthRequiredMessage(state, spec.serverName);
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { error: "auth_required", server: spec.serverName, message, autoAuthAttempted },
+        };
+      }
+      const failure = describeFailure(state, spec.serverName);
+      return {
+        content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not available${failure !== null ? ` (${failure})` : ""}` }],
+        details: { error: "server_unavailable", server: spec.serverName },
+      };
+    }
+
+    const connection = state.manager.getConnection(spec.serverName);
+    if (!connection || connection.status !== "connected") {
+      return {
+        content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not connected` }],
+        details: { error: "not_connected", server: spec.serverName },
+      };
+    }
+
+    const normalizedParams = spec.resourceUri ? params : normalizeToolArguments(params);
+    // The spec is fixed at registration; approval must see the hints the server advertises now.
+    const annotations = spec.resourceUri
+      ? undefined
+      : state.toolMetadata.get(spec.serverName)?.find(tool => !tool.resourceUri && tool.originalName === spec.originalName)?.annotations;
+
+    let uiSession: UiSessionRuntime | null = null;
+    const requestOptions = state.manager.getRequestOptions?.(spec.serverName, ownedSignal) ?? (ownedSignal ? { signal: ownedSignal } : undefined);
+
+    // A script gets the server's whole result; Pi limits what the script returns to the model.
+    // The script never reads details, so the raw result is left out of them instead of copied unbounded.
+    const toScript = state.deliversToScript?.(toolCallId) === true;
+    const outputGuardOptions = { ...resolveMcpOutputGuardOptions(state.config.settings), ...(toScript ? { enabled: false } : {}) };
+    const rawDetails = state.config.settings?.directToolResultDetails === "bounded" && !toScript;
+    const appendStructuredContent = state.config.mcpServers[spec.serverName]?.appendStructuredContent !== false;
+    const recoverAuthConnection = async () => {
+      const current = state.manager.getConnection(spec.serverName);
+      if (current?.status === "connected") return current;
+
+      if (!autoAuthAttempted) {
+        autoAuthAttempted = true;
+        const autoAuth = await attemptDirectAutoAuth(state, spec.serverName, ownedSignal);
+        if (autoAuth.status === "failed") {
+          throw new SessionRecoveryAuthRequiredError(spec.serverName, autoAuth.message);
+        }
+        if (autoAuth.status === "success") {
+          const afterAuth = state.manager.getConnection(spec.serverName);
+          if (afterAuth?.status === "connected") return afterAuth;
+          if (afterAuth?.status === "needs-auth") {
+            await state.manager.close(spec.serverName);
+          }
+          clearFailure(state, spec.serverName);
+          const reconnected = await lazyConnect(state, spec.serverName, ownedSignal);
+          return reconnected ? state.manager.getConnection(spec.serverName) : undefined;
+        }
+      }
+      return state.manager.getConnection(spec.serverName);
+    };
+
+    let approval: ToolCallApprovalResult | undefined;
+    // A call handed to the background task registry leaves its in-flight count there.
+    let backgrounded = false;
+    try {
+      // In flight from here so an idle check cannot close the server while the approval dialog is open.
+      state.manager.touch(spec.serverName);
+      state.manager.incrementInFlight(spec.serverName);
+      approval = await ensureToolCallApproved(state, spec.serverName, {
+        name: spec.prefixedName,
+        originalName: spec.originalName,
+        description: spec.description,
+        ...(spec.inputSchema !== undefined ? { inputSchema: spec.inputSchema } : {}),
+        ...(spec.resourceUri !== undefined ? { resourceUri: spec.resourceUri } : {}),
+        ...(spec.uiResourceUri !== undefined ? { uiResourceUri: spec.uiResourceUri } : {}),
+        ...(spec.uiStreamMode !== undefined ? { uiStreamMode: spec.uiStreamMode } : {}),
+        ...(annotations !== undefined ? { annotations } : {}),
+      }, normalizedParams, ownedSignal, spec.resourceUri ? "resource" : "direct");
+      if (approval.ok === false) {
+        return approvalBlockedResult(approval, spec.serverName, spec.originalName);
+      }
+
+      if (spec.resourceUri) {
+        const result = await withSessionRecovery<ClientReadResourceResult>(
+          {
+            manager: state.manager,
+            config: state.config,
+            ...(ownedSignal ? { signal: ownedSignal } : {}),
+            onNeedsAuth: recoverAuthConnection,
+          },
+          spec.serverName,
+          async (conn) => {
+            const refreshRead = await state.manager.prepareResourceUse?.(spec.serverName, spec.resourceUri!, conn);
+            return conn.client.readResource(
+              { uri: spec.resourceUri! },
+              refreshRead ? { ...requestOptions, cacheMode: "refresh" } : requestOptions,
+            );
+          },
+        );
+        const content = transformMcpResourceContents(result.contents ?? [], state.owner?.signal);
+        const guarded = await guardMcpOutput(content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }], {
+          ...outputGuardOptions,
+          ...(rawDetails ? { rawMcpResult: result } : {}),
+        });
+        return {
+          content: guarded.content,
+          details: { server: spec.serverName, resourceUri: spec.resourceUri, ...guardedMcpDetails(guarded) },
+        };
+      }
+
+      // openUi: false runs the tool as if it declared no UI.
+      const hasUi = !!spec.uiResourceUri && state.config.mcpServers[spec.serverName]?.openUi !== false;
+      uiSession = hasUi
+        ? await maybeStartUiSession(state, {
+            serverName: spec.serverName,
+            toolName: spec.originalName,
+            toolArgs: normalizedParams,
+            uiResourceUri: spec.uiResourceUri!,
+            ...(spec.uiStreamMode !== undefined ? { streamMode: spec.uiStreamMode } : {}),
+            ...(signal ? { signal } : {}),
+            onNeedsAuth: recoverAuthConnection,
+          })
+        : null;
+
+      const requestMeta = withToolCallIdMeta(uiSession?.requestMeta, toolCallId);
+      const recordOutput = observedOutputRecorder(state, spec.serverName, spec.originalName);
+      const callParams = spec.executorPath !== undefined
+        ? executorCallParams(spec.executorPath, normalizedParams)
+        : { name: spec.originalName, arguments: normalizedParams };
+      const guardResult = (result: Record<string, unknown>, suffix?: string) => {
+        const content = resolveMcpResultContent(result, state.owner?.signal, appendStructuredContent);
+        return guardMcpOutput(content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }], {
+          ...outputGuardOptions,
+          ...(suffix === undefined ? {} : { suffix }),
+          ...(result.isError ? { prefix: "Error: ", emptyTextFallback: "Tool execution failed" } : {}),
+          ...(rawDetails ? { rawMcpResult: result } : {}),
+        });
+      };
+      // Only a call the model made goes to the background; code callers and the MCP-UI and Executor flows need the value itself.
+      const backgroundTasks = state.calledByModel?.(toolCallId) === true && !hasUi && spec.executorPath === undefined
+        ? state.backgroundTasks
+        : undefined;
+      let startedTask: StartedTask | undefined;
+      const callResult = await withSessionRecovery<ClientCallToolResult>(
+        {
+          manager: state.manager,
+          config: state.config,
+          ...(ownedSignal ? { signal: ownedSignal } : {}),
+          onNeedsAuth: recoverAuthConnection,
+        },
+        spec.serverName,
+        async (conn) => {
+          await state.manager.ensureListen?.(spec.serverName, conn);
+          return callToolAnsweringExecutorPauses({
+            conn,
+            manager: state.manager,
+            serverName: spec.serverName,
+            params: { ...callParams, _meta: requestMeta },
+            toolName: spec.originalName,
+            requestOptions,
+            signal: ownedSignal,
+            call: callToolOn(conn, ownedSignal, backgroundTasks && !isExecutorConnection(conn) ? (task) => { startedTask = task; } : undefined),
+          });
+        },
+      );
+      if (startedTask !== undefined) {
+        const { taskId, execution } = startedTask;
+        void backgroundTasks!.start({
+          server: spec.serverName,
+          tool: spec.originalName,
+          taskId,
+          execution,
+          render: async (result) => {
+            if (!result.isError) recordOutput(result);
+            const guarded = await guardResult(result);
+            return { content: guarded.content, details: { ...(result.isError ? { error: "tool_error" } : {}), ...guardedMcpDetails(guarded) } };
+          },
+          guard: (text) => guardMcpText(text, outputGuardOptions),
+        });
+        backgrounded = true;
+        const handle = backgroundTaskHandle(spec.serverName, spec.originalName, taskId, state.proxyToolAvailable?.() === true);
+        return { content: handle.content, details: { server: spec.serverName, tool: spec.originalName, task: handle.task } };
+      }
+      const result = spec.executorPath !== undefined ? unwrapExecutorCallResult(spec.executorPath, callResult) : callResult;
+      const executorMatches = spec.executorPath !== undefined ? executorUnknownToolMatches(spec.executorPath, callResult) : undefined;
+      if (executorMatches) {
+        await repageExecutorCatalog(state, spec.serverName, ownedSignal);
+        return {
+          content: [{ type: "text" as const, text: executorUnknownToolText(spec.originalName, executorMatches) }],
+          details: { error: "tool_not_found", server: spec.serverName, suggestions: executorMatches },
+        };
+      }
+      uiSession?.sendToolResult(result as import("@modelcontextprotocol/client").CallToolResult);
+      if (!result.isError) recordOutput(result);
+
+      if (result.isError) {
+        const guarded = await guardResult(result);
+        return {
+          content: guarded.content,
+          details: { error: "tool_error", server: spec.serverName, ...guardedMcpDetails(guarded) },
+          ...structuredContentOf(result),
+        };
+      }
+
+      if (hasUi) {
+        const uiSummary = summarizeUiSessionResult(uiSession);
+        const guarded = await guardResult(result, `\n\n${uiSummary.message}`);
+        return {
+          content: guarded.content,
+          details: {
+            server: spec.serverName,
+            tool: spec.originalName,
+            uiOpen: uiSummary.uiOpen,
+            uiViewer: uiSummary.uiViewer,
+            uiUrl: uiSummary.uiUrl,
+            ...guardedMcpDetails(guarded),
+          },
+          ...structuredContentOf(result),
+        };
+      }
+
+      const guarded = await guardResult(result);
+      return {
+        content: guarded.content,
+        details: { server: spec.serverName, tool: spec.originalName, ...guardedMcpDetails(guarded) },
+        ...structuredContentOf(result),
+      };
+    } catch (error) {
+      // Approval errors, such as an abort while the dialog is open, propagate unchanged.
+      if (!approval) throw error;
+      if (error instanceof SessionRecoveryAuthRequiredError) {
+        const message = error.authMessage ?? getDirectAuthRequiredMessage(state, spec.serverName);
+        uiSession?.sendToolCancelled(message);
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { error: "auth_required", server: spec.serverName, message, autoAuthAttempted },
+        };
+      }
+      if (error instanceof UrlElicitationRequiredError) {
+        const action = await state.manager.handleUrlElicitationRequired(spec.serverName, error);
+        const message = action === "accept"
+          ? "The original MCP tool did not run. Complete the opened browser interaction, then retry the tool."
+          : `The URL interaction was ${action === "decline" ? "declined" : "cancelled"}.`;
+        uiSession?.sendToolCancelled(message);
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { error: "url_elicitation_required", server: spec.serverName, action },
+        };
+      }
+      const inputRequired = getInputRequiredNeedsUiDetails(error, spec.resourceUri
+        ? { server: spec.serverName, resourceUri: spec.resourceUri }
+        : { server: spec.serverName, tool: spec.originalName });
+      if (inputRequired) {
+        uiSession?.sendToolCancelled(inputRequired.message);
+        return {
+          content: [{ type: "text" as const, text: inputRequired.message }],
+          details: { ...inputRequired },
+        };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const aborted = isAbortError(error, ownedSignal);
+      if (!aborted) {
+        await state.manager.close(spec.serverName).catch(() => {});
+      }
+      uiSession?.sendToolCancelled(message);
+      const schemaText = spec.inputSchema ? `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}` : "";
+      const guarded = await guardMcpOutput([{ type: "text" as const, text: message }], { ...outputGuardOptions, prefix: "Failed to call tool: ", suffix: schemaText });
+      return {
+        content: guarded.content,
+        details: { error: aborted ? "aborted" : "call_failed", server: spec.serverName, ...guardedMcpDetails(guarded) },
+      };
+    } finally {
+      if (uiSession?.reused) {
+        uiSession.close();
+      }
+      if (!backgrounded) state.manager.decrementInFlight(spec.serverName);
+      state.manager.touch(spec.serverName);
+    }
+  };
+}

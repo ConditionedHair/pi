@@ -1,0 +1,59 @@
+{
+  "name": "graphify-pi",
+  "version": "0.3.0",
+  "description": "Pi extension and skill package that makes graphify knowledge graphs always-on during coding sessions.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "graphify",
+    "coding-agent",
+    "knowledge-graph"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juhas96/graphify-pi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/juhas96/graphify-pi/issues"
+  },
+  "homepage": "https://github.com/juhas96/graphify-pi#readme",
+  "type": "module",
+  "files": [
+    "extensions",
+    "skills",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "evals": "node --test --experimental-strip-types evals/*.test.ts",
+    "evals:live": "node --experimental-strip-types evals/run-live.ts",
+    "evals:live:dry": "node --experimental-strip-types evals/run-live.ts --dry-run",
+    "evals:judge": "node --experimental-strip-types evals/run-judge.ts",
+    "evals:judge:dry": "node --experimental-strip-types evals/run-judge.ts --dry-run",
+    "evals:report": "node --experimental-strip-types evals/render-report.ts",
+    "evals:full": "npm run evals && npm run evals:live && npm run evals:judge && npm run evals:report",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "0.68.1"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}

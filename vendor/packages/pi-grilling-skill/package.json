@@ -1,0 +1,28 @@
+{
+  "name": "pi-grilling-skill",
+  "version": "1.0.4",
+  "description": "Grill and stress-test the user on plans, decisions, or architectural ideas before taking action.",
+  "license": "Apache-2.0",
+  "author": "Andrei Husanu <pi-grilling-skill@egitr.com>",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-skill",
+    "pi-extension",
+    "grill",
+    "grilling",
+    "plan",
+    "interview",
+    "stress-test",
+    "requirements"
+  ],
+  "files": ["skills"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/husanu/agenteer",
+    "directory": "grilling"
+  },
+  "pi": {
+    "skills": ["./skills"]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "pi-generative-ui",
+  "version": "0.3.0",
+  "description": "Generative UI for pi — render interactive HTML/SVG widgets in native windows via Glimpse",
+  "type": "commonjs",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    ".pi/"
+  ],
+  "pi": {
+    "extensions": [
+      ".pi/extensions/generative-ui"
+    ]
+  },
+  "scripts": {
+    "build:runtime": "node .pi/extensions/generative-ui/build.mjs",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build:runtime"
+  },
+  "dependencies": {
+    "glimpseui": "^0.8.1",
+    "morphdom": "^2.7.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@earendil-works/pi-tui": "^0.78.0",
+    "typebox": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  },
+  "author": "michaelliv",
+  "license": "MIT"
+}

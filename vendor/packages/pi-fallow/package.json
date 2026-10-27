@@ -1,0 +1,96 @@
+{
+  "name": "pi-fallow",
+  "version": "0.6.3",
+  "type": "module",
+  "packageManager": "npm@11.6.2",
+  "description": "Pi extension that brings Fallow codebase intelligence into Pi as an agent tool and slash command.",
+  "license": "MIT",
+  "author": "Revaz Zakalashvili",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "pi-fallow",
+    "fallow",
+    "codebase-intelligence",
+    "static-analysis",
+    "dead-code",
+    "duplication",
+    "maintainability",
+    "typescript",
+    "javascript"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "check": "npm test && npm run check:bundle && npm run health",
+    "check:publish": "npm test && npm run check:bundle && npm run health && npm run dupes && npm run dead-code && npm run smoke:fallow && npm run smoke:fallow-cov && npm run audit:all && npm run package:smoke",
+    "check:bundle": "esbuild extensions/fallow.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --external:@earendil-works/pi-ai --external:typebox --outdir=/tmp/pi-fallow-esbuild && esbuild extensions/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-coding-agent --external:@earendil-works/pi-tui --external:@earendil-works/pi-ai --external:typebox --outdir=/tmp/pi-fallow-esbuild",
+    "health": "fallow health --format json --quiet",
+    "dupes": "fallow dupes --format json --quiet",
+    "dead-code": "fallow dead-code --format json --quiet",
+    "test": "node --test",
+    "coverage": "c8 --all --include='extensions/**/*.ts' --reporter=text --reporter=lcov --reports-dir=coverage --check-coverage --lines=75 --statements=75 --functions=79 --branches=83 node --test",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "audit:all": "npm audit --audit-level=high",
+    "bench:tokens": "node scripts/token-benchmark.mjs",
+    "bench:tokens:compare": "node scripts/token-benchmark-compare.mjs",
+    "bench:performance": "node scripts/performance-benchmark.mjs",
+    "bench:performance:compare": "node scripts/performance-benchmark-compare.mjs",
+    "bench:issues": "node scripts/project-issues-benchmark.mjs",
+    "bench:packages": "node scripts/popular-packages-benchmark.mjs",
+    "smoke:fallow": "node scripts/fallow-smoke.mjs",
+    "smoke:fallow-cov": "npm exec --yes --ignore-scripts --package=@fallow-cli/fallow-cov@0.4.1 -- node scripts/fallow-cov-certification.mjs",
+    "smoke:fallow-similar": "node scripts/similar-code-certification.mjs",
+    "probe:overlay": "python3 scripts/overlay-pty-probe.py",
+    "pack:check": "npm pack --dry-run",
+    "package:smoke": "node scripts/package-smoke.mjs",
+    "publish:public": "npm run check:publish && npm publish --access public --provenance"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/revazi/pi-fallow.git"
+  },
+  "homepage": "https://github.com/revazi/pi-fallow#readme",
+  "bugs": {
+    "url": "https://github.com/revazi/pi-fallow/issues"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE",
+    "pi-fallow.png",
+    "pi-fallow-similar-code.png",
+    "extensions/**/*.ts"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/revazi/pi-fallow/main/pi-fallow.png"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.0.4",
+    "@earendil-works/pi-coding-agent": "^1.0.4",
+    "@earendil-works/pi-tui": "^1.0.4",
+    "c8": "12.0.0",
+    "esbuild": "0.28.2",
+    "fallow": "3.31.0",
+    "jiti": "^2.7.0",
+    "js-tiktoken": "^1.0.21",
+    "typebox": "^1.3.36"
+  }
+}
