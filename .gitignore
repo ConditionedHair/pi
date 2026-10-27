@@ -1,0 +1,6 @@
+# Public repository: track only explicitly reviewed configuration.
+/*
+!/.gitignore
+!/README.md
+!/settings.json
+!/mcp.json

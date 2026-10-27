@@ -1,0 +1,22 @@
+{
+  "lastChangelogVersion": "1.4.0",
+  "packages": [
+    "npm:pi-grilling-skill",
+    "npm:pi-fallow",
+    "npm:pi-playwright",
+    "npm:@feniix/pi-sequential-thinking",
+    "npm:pi-chrome-dev-tools",
+    "npm:pi-impeccable",
+    "npm:pi-multiagent",
+    "npm:graphify-pi",
+    "npm:pi-generative-ui",
+    "npm:pi-memory",
+    "npm:pi-web-access",
+    "npm:pi-caveman",
+    "npm:pi-exit-cmd",
+    "npm:pi-mcp-adapter"
+  ],
+  "extensions": [
+    "-builtin:mcp"
+  ]
+}
