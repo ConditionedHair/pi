@@ -6,7 +6,7 @@ Personal Pi coding agent configuration, package declarations, lockfile, and cust
 
 - `settings.json`: package declarations and extension preferences.
 - `mcp.json`: Context7 and Google Services MCP servers; Context7 credentials come from `CONTEXT7_API_KEY`.
-- `mcp.composio.example.json`: sanitized Composio MCP configuration template; the private endpoint comes from `COMPOSIO_MCP_URL`.
+- `mcp.composio.example.json`: optional manual Composio configuration template; not needed for the `/mcp-auth composio` sign-in flow and not loaded automatically.
 - `npm/package.json` and `npm/package-lock.json`: installed extension and skill packages, with resolved versions.
 - `skills/`: local code review, codebase design, bug diagnosis, and test-driven development skills.
 - `vendor/packages/`: committed source snapshots of all 14 configured skill and extension packages, including their skill files, extension entry points, supporting code, documentation, and packaged license files. Scoped packages retain their scope directory (for example, `vendor/packages/@feniix/pi-sequential-thinking/`).
@@ -153,15 +153,17 @@ The commands above restore the committed npm lockfile. `pi update --extensions` 
 
 ### Composio MCP
 
-Composio is configured locally in `~/.config/mcp/mcp.json`, outside this repository. The installed `pi-mcp-adapter` loads that configuration; Composio is a remote service, not a separate vendored package. Its private endpoint is intentionally not committed.
+The author's Composio sign-in flow uses the installed `pi-mcp-adapter`. Inside Pi, run:
 
-To restore Composio:
+```text
+/mcp-auth composio
+```
 
-1. Set `COMPOSIO_MCP_URL` to your full private Composio MCP endpoint in the environment that launches Pi. Treat the full URL as a credential.
-2. Merge the `composio` entry from `mcp.composio.example.json` into `mcpServers` in `~/.config/mcp/mcp.json`, preserving any existing servers. If that file does not exist, copy the template there after creating the parent directory.
-3. Restart Pi and inspect Composio with `/mcp`.
+Follow the authentication prompts, then inspect the connection with `/mcp`. Authentication is machine-local and is not included in this repository.
 
-The template uses environment-variable URL interpolation supported by the installed `pi-mcp-adapter`. It is documentation only: Pi does not automatically load `mcp.composio.example.json`. Existing local Composio configuration remains unchanged.
+`/mcp-auth composio` authenticates a server named `composio`; it is not a package-install command. If the adapter reports an unknown server on a fresh machine, configure your Composio MCP connection first, then run the sign-in command again. The author's existing server configuration lives outside this repository in `~/.config/mcp/mcp.json`.
+
+`mcp.composio.example.json` is only an optional manual-config template for supplying a private endpoint through `COMPOSIO_MCP_URL`. Pi does not load that example file automatically. You do not need to copy it or set that variable when using an already-configured Composio connection. Never commit private endpoints or authentication tokens.
 
 ## Exclusions
 
