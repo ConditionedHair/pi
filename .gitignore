@@ -17,6 +17,7 @@
 
 # Generated caches and installed dependencies
 /mcp-cache.json
+/web-search-cache/
 node_modules/
 .cache/
 *.log

@@ -14,7 +14,8 @@
     "npm:pi-web-access",
     "npm:pi-caveman",
     "npm:pi-exit-cmd",
-    "npm:pi-mcp-adapter"
+    "npm:pi-mcp-adapter",
+    "https://github.com/fitchmultz/pi-edit-session-in-place"
   ],
   "extensions": [
     "-builtin:mcp"
